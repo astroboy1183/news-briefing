@@ -15,15 +15,17 @@ bot: `@jayanth_news_brief_bot`.
   dict is the only change needed to tune coverage.
   `TITLES_PER_FEED = 8` caps how much each feed contributes.
 - **`gather_headlines()`** — parses each feed with `feedparser`, takes up
-  to 8 titles per feed. Two layers of defense: the whole feed is wrapped
-  in `try/except` (a dead feed is skipped, the other feed in that section
-  still delivers), and entries are read with `.get("title")` so one
-  malformed entry can't sink its feed.
+  to 8 `title | link` lines per feed. Two layers of defense: the whole
+  feed is wrapped in `try/except` (a dead feed is skipped, the other feed
+  in that section still delivers), and entries are read with
+  `.get("title")` so one malformed entry can't sink its feed.
 - **`summarize(headlines)`** — one model call. The prompt gives the raw
-  titles per section and demands fixed sections with hard caps: INDIA (4
-  bullets, dedupe overlap, drop clickbait), US (3, national politics/
-  economy/policy only), GEOPOLITICS (3, prefer India/US relevance). A
-  section whose feeds all failed renders as a single "unavailable" line.
+  `title | link` lines per section and demands fixed sections with hard
+  caps: INDIA (4 bullets, dedupe overlap, drop clickbait), US (3,
+  national politics/economy/policy only), GEOPOLITICS (3, prefer
+  India/US relevance). Every bullet is followed by its story link on its
+  own line, copied verbatim (never invented). A section whose feeds all
+  failed renders as a single "unavailable" line.
 - **`main()`** — gather → summarize → send, with a headline count in the
   header. If *every* feed is unreachable it skips the model and sends a
   one-liner instead.

@@ -42,7 +42,7 @@ TITLES_PER_FEED = 8
 
 
 def gather_headlines():
-    """{'india': [titles...], ...} — failed feeds skipped."""
+    """{'india': ['title | link', ...], ...} — failed feeds skipped."""
     out = {}
     for section, urls in FEEDS.items():
         titles = []
@@ -51,7 +51,7 @@ def gather_headlines():
                 feed = feedparser.parse(url)
                 # .get(): a single malformed entry must not sink its feed
                 titles += [
-                    e.get("title")
+                    f"{e.get('title')} | {e.get('link', '')}"
                     for e in feed.entries[:TITLES_PER_FEED]
                     if e.get("title")
                 ]
@@ -70,11 +70,11 @@ def summarize(headlines):
     prompt = (
         "You are composing my morning news briefing. Be terse. "
         "Plain text only — no markdown headers or bold.\n\n"
-        "=== INPUT 1: India news headlines (raw, from multiple feeds) ===\n"
+        "=== INPUT 1: India news headlines (title | link, multiple feeds) ===\n"
         f"{india or '(feeds unavailable)'}\n\n"
-        "=== INPUT 2: US news headlines (raw, from multiple feeds) ===\n"
+        "=== INPUT 2: US news headlines (title | link, multiple feeds) ===\n"
         f"{us or '(feeds unavailable)'}\n\n"
-        "=== INPUT 3: World/geopolitics headlines (raw, from multiple feeds) ===\n"
+        "=== INPUT 3: World/geopolitics headlines (title | link, multiple feeds) ===\n"
         f"{world or '(feeds unavailable)'}\n\n"
         "Produce EXACTLY this output structure:\n\n"
         "📰 INDIA — 4 bullets max. Dedupe overlapping stories, drop "
@@ -84,6 +84,9 @@ def summarize(headlines):
         "🌍 GEOPOLITICS — 3 bullets max. Conflicts, diplomacy, trade, major "
         "elections. Prefer stories with India or US relevance when choosing "
         "what to keep.\n\n"
+        "After each bullet, put the story's link on its own line (when "
+        "feeds overlap, pick the better-known source's link). Copy links "
+        "verbatim — never invent one.\n\n"
         "If an input says unavailable, output that section as a single line "
         "saying so."
     )
