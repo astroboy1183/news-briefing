@@ -53,6 +53,13 @@ bot: `@jayanth_news_brief_bot`.
 - Two crons + dedupe guard: backup at 07:13 IST delivers only if the
   06:13 primary was dropped or failed.
 
+- **Cross-day memory**: candidate links live in `state/seen.json`
+  (committed back by the workflow) for 3 days, so a story lingering in
+  the feeds is briefed exactly once. Anything shown to the model counts
+  as seen — a story it skipped yesterday earned no second chance by
+  merely reappearing.
+- Tests run in CI on every push (`.github/workflows/tests.yml`).
+
 ## Ops
 
 - Schedule: `.github/workflows/news-briefing.yml`

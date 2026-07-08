@@ -9,9 +9,14 @@ One agent, one task, one bot. Tech news deliberately excluded — the
 tech-news agent covers it in depth an hour later; cricket has its own
 agent too.
 
+Cross-day memory (state/seen.json, committed back by the workflow): a
+story that lingers in the feeds for days is only ever briefed once —
+candidate links are remembered for 3 days and filtered out on re-entry.
+
 Hard failures raise and land in the Actions log.
 """
 
+import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -23,6 +28,29 @@ from agentlib import ask_llm, send_telegram
 
 BASE_DIR = Path(__file__).resolve().parent
 IST = ZoneInfo("Asia/Kolkata")
+
+STATE_FILE = BASE_DIR / "state" / "seen.json"
+SEEN_DAYS = 3  # feeds re-serve stories for a day or two; 3 covers weekends
+
+
+def load_seen():
+    """{link: 'YYYY-MM-DD'} of recently briefed candidates, pruned to window.
+
+    Anything fed to the model counts as seen — a story it chose to skip
+    yesterday was not important enough to resurface unchanged today."""
+    try:
+        seen = json.loads(STATE_FILE.read_text())
+    except (OSError, ValueError):
+        return {}
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=SEEN_DAYS)).strftime(
+        "%Y-%m-%d"
+    )
+    return {k: v for k, v in seen.items() if isinstance(v, str) and v >= cutoff}
+
+
+def save_seen(seen):
+    STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    STATE_FILE.write_text(json.dumps(seen, indent=0, sort_keys=True) + "\n")
 
 FEEDS = {
     "india": [
@@ -51,7 +79,7 @@ def fresh(entry, cutoff):
     return datetime(*stamp[:6], tzinfo=timezone.utc) >= cutoff
 
 
-def gather_headlines():
+def gather_headlines(seen=frozenset()):
     """{'india': ['title | link', ...], ...} — failed feeds skipped."""
     cutoff = datetime.now(timezone.utc) - timedelta(hours=LOOKBACK_HOURS)
     out = {}
@@ -61,11 +89,14 @@ def gather_headlines():
             try:
                 feed = feedparser.parse(url)
                 # .get(): a single malformed entry must not sink its feed;
-                # fresh(): stale/evergreen items never leak into the prompt.
+                # fresh(): stale/evergreen items never leak into the prompt;
+                # seen: a story briefed in the last 3 days never repeats.
                 titles += [
                     f"{e.get('title')} | {e.get('link', '')}"
                     for e in feed.entries[:TITLES_PER_FEED]
-                    if e.get("title") and fresh(e, cutoff)
+                    if e.get("title")
+                    and fresh(e, cutoff)
+                    and e.get("link", "") not in seen
                 ]
             except Exception:
                 continue  # dead feed → just use the others
@@ -148,18 +179,29 @@ def summarize(headlines):
 
 def main():
     load_dotenv(BASE_DIR / ".env")
-    headlines = gather_headlines()
+    seen = load_seen()
+    headlines = gather_headlines(seen)
     scanned = sum(len(v) for v in headlines.values())
 
     header = (
         f"📰 News briefing — {datetime.now(IST):%a %d %b %Y}\n"
-        f"({scanned} headlines scanned)\n\n"
+        f"({scanned} fresh headlines scanned)\n\n"
     )
     if scanned == 0:
-        body = "Quiet day: all news feeds unreachable ☕"
+        body = "Quiet day: nothing new since yesterday's briefing ☕"
     else:
         body = validate_links(summarize(headlines), gathered_links(headlines))
     send_telegram(header + body)
+
+    # Remember what the model was shown — after the send, so a state
+    # failure never costs the briefing itself.
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    for link in gathered_links(headlines):
+        seen[link] = today
+    try:
+        save_seen(seen)
+    except OSError:
+        pass
 
 
 if __name__ == "__main__":
