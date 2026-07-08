@@ -12,7 +12,7 @@ agent too.
 Hard failures raise and land in the Actions log.
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -28,6 +28,7 @@ FEEDS = {
     "india": [
         "https://www.thehindu.com/news/national/feeder/default.rss",
         "https://timesofindia.indiatimes.com/rssfeedstopstories.cms",
+        "https://www.hindustantimes.com/feeds/rss/india-news/rssfeed.xml",
     ],
     "us": [
         "https://feeds.npr.org/1001/rss.xml",
@@ -39,26 +40,78 @@ FEEDS = {
     ],
 }
 TITLES_PER_FEED = 8
+LOOKBACK_HOURS = 24
+
+
+def fresh(entry, cutoff):
+    """Keep entries newer than cutoff; undated entries are kept."""
+    stamp = entry.get("published_parsed") or entry.get("updated_parsed")
+    if not stamp:
+        return True
+    return datetime(*stamp[:6], tzinfo=timezone.utc) >= cutoff
 
 
 def gather_headlines():
     """{'india': ['title | link', ...], ...} — failed feeds skipped."""
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=LOOKBACK_HOURS)
     out = {}
     for section, urls in FEEDS.items():
         titles = []
         for url in urls:
             try:
                 feed = feedparser.parse(url)
-                # .get(): a single malformed entry must not sink its feed
+                # .get(): a single malformed entry must not sink its feed;
+                # fresh(): stale/evergreen items never leak into the prompt.
                 titles += [
                     f"{e.get('title')} | {e.get('link', '')}"
                     for e in feed.entries[:TITLES_PER_FEED]
-                    if e.get("title")
+                    if e.get("title") and fresh(e, cutoff)
                 ]
             except Exception:
                 continue  # dead feed → just use the others
         out[section] = titles
     return out
+
+
+def gathered_links(headlines):
+    """The set of source URLs we actually handed the model — for validation."""
+    links = set()
+    for titles in headlines.values():
+        for t in titles:
+            link = t.rsplit(" | ", 1)[-1].strip()
+            if link.startswith("http"):
+                links.add(link)
+    return links
+
+
+def validate_links(text, allowed):
+    """Strip any emitted URL not in the gathered set (guards hallucinated links).
+
+    Pure string matching: scan each whitespace token, and if it looks like a
+    URL whose (punctuation-trimmed) form was never in a source feed, replace
+    it with a marker so a made-up link can never reach me.
+    """
+    leading = "(<[{\"'"
+    trailing = ".,);]}>\"'"
+    lines = []
+    for line in text.splitlines():
+        parts = []
+        for tok in line.split(" "):
+            start = 0
+            while start < len(tok) and tok[start] in leading:
+                start += 1
+            end = len(tok)
+            while end > start and tok[end - 1] in trailing:
+                end -= 1
+            bare = tok[start:end]
+            if bare.startswith(("http://", "https://")) and bare not in allowed:
+                parts.append(
+                    tok[:start] + "[link removed: not in source feeds]" + tok[end:]
+                )
+            else:
+                parts.append(tok)
+        lines.append(" ".join(parts))
+    return "\n".join(lines)
 
 
 def summarize(headlines):
@@ -90,7 +143,7 @@ def summarize(headlines):
         "If an input says unavailable, output that section as a single line "
         "saying so."
     )
-    return ask_llm(prompt)
+    return ask_llm(prompt, max_tokens=4000)
 
 
 def main():
@@ -105,7 +158,7 @@ def main():
     if scanned == 0:
         body = "Quiet day: all news feeds unreachable ☕"
     else:
-        body = summarize(headlines)
+        body = validate_links(summarize(headlines), gathered_links(headlines))
     send_telegram(header + body)
 
 
