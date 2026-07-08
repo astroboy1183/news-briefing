@@ -57,6 +57,9 @@ FEEDS = {
         "https://www.thehindu.com/news/national/feeder/default.rss",
         "https://timesofindia.indiatimes.com/rssfeedstopstories.cms",
         "https://www.hindustantimes.com/feeds/rss/india-news/rssfeed.xml",
+        # policy/economy depth beyond the mainstream trio — verified 9 Jul 2026
+        "https://indianexpress.com/section/india/feed/",
+        "https://www.livemint.com/rss/news",
     ],
     "us": [
         "https://feeds.npr.org/1001/rss.xml",

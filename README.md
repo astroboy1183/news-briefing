@@ -60,6 +60,10 @@ bot: `@jayanth_news_brief_bot`.
   merely reappearing.
 - Tests run in CI on every push (`.github/workflows/tests.yml`).
 
+- **Wider India sourcing**: Indian Express and Mint join the three
+  mainstream feeds — policy/economy depth, not just headlines
+  (verified 9 Jul 2026).
+
 ## Ops
 
 - Schedule: `.github/workflows/news-briefing.yml`
