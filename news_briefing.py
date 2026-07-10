@@ -41,37 +41,57 @@ from agentlib import ask_llm, send_telegram
 BASE_DIR = Path(__file__).resolve().parent
 IST = ZoneInfo("Asia/Kolkata")
 
-# section → feeds. All URLs verified before inclusion (last check 10 Jul
-# 2026 — Politico tested and rejected, dead feed).
+# section → feeds. Every URL verified before inclusion (last sweep 10 Jul
+# 2026: Politico, ThePrint, Deccan Herald, Business Standard and
+# Financial Express tested and REJECTED — dead or empty feeds).
 FEEDS = {
     "india": [
         "https://www.thehindu.com/news/national/feeder/default.rss",
         "https://timesofindia.indiatimes.com/rssfeedstopstories.cms",
         "https://www.hindustantimes.com/feeds/rss/india-news/rssfeed.xml",
         "https://indianexpress.com/section/india/feed/",
+        "https://feeds.feedburner.com/ndtvnews-top-stories",
+        "https://www.indiatoday.in/rss/1206578",
+        "https://www.news18.com/rss/india.xml",
+        "https://feeds.feedburner.com/ScrollinArticles.rss",
     ],
     "business": [
         "https://www.livemint.com/rss/news",
         "https://economictimes.indiatimes.com/rssfeedstopstories.cms",
+        "https://www.moneycontrol.com/rss/latestnews.xml",
+        "https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms",
     ],
     "hyderabad": [
         "https://www.thehindu.com/news/national/telangana/feeder/default.rss",
         "https://timesofindia.indiatimes.com/rssfeeds/-2128816011.cms",
+        "https://telanganatoday.com/feed",
+        "https://www.siasat.com/feed/",
     ],
     "us": [
         "https://feeds.npr.org/1001/rss.xml",
         "https://rss.nytimes.com/services/xml/rss/nyt/US.xml",
         "https://www.theguardian.com/us-news/rss",
         "http://rss.cnn.com/rss/cnn_us.rss",
+        "https://feeds.washingtonpost.com/rss/national",
+        "https://abcnews.go.com/abcnews/usheadlines",
+        "https://thehill.com/feed/",
+        "https://api.axios.com/feed/",
     ],
     "world": [
         "http://feeds.bbci.co.uk/news/world/rss.xml",
         "https://www.aljazeera.com/xml/rss/all.xml",
+        "https://www.theguardian.com/world/rss",
+        "http://rss.cnn.com/rss/edition_world.rss",
+        "https://www.france24.com/en/rss",
+        "https://rss.dw.com/rdf/rss-en-world",
     ],
 }
-TITLES_PER_FEED = 8
-SNIPPET_CHARS = 250  # feed summary excerpt per entry; many Indian feeds
-LOOKBACK_HOURS = 24  # have none — the model then judges by title alone
+# 6 (not 8) per feed now that there are 30 sources: ~180 candidates keeps
+# the prompt bounded while wider sourcing still improves coverage — the
+# bullets stay capped, so the MESSAGE never grows, only its selection pool.
+TITLES_PER_FEED = 6
+SNIPPET_CHARS = 250  # feed summary excerpt per entry; some feeds have
+LOOKBACK_HOURS = 24  # none — the model then judges by title alone
 
 TAG_RE = re.compile(r"<[^>]+>")
 

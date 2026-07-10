@@ -3,21 +3,21 @@
 Morning news briefing → Telegram, ~6:13 AM IST via GitHub Actions.
 One agent, one task, one bot: `@jayanth_news_brief_bot`.
 
-Fourteen feeds, five sections plus a topline:
+Thirty verified feeds, five sections plus a topline:
 
 ```
 📰 News — Fri 10 Jul
-52 fresh headlines · 14 feeds
+94 fresh headlines · 30 feeds
 
 🗞 Top: <the single biggest story today>
 
-📰 INDIA — 5 bullets      (Hindu, TOI, HT, Indian Express)
-💼 BUSINESS — 3 bullets   (Mint, Economic Times — the data-engineer lens)
-📍 HYDERABAD — 2 bullets  (Hindu Telangana, TOI Hyderabad; omitted if quiet)
-🇺🇸 US — 5 bullets         (NPR, NYT, Guardian US, CNN US — India-US
-                           corridor stories always included: visas, H-1B,
-                           immigration, trade)
-🌍 WORLD — 3 bullets      (BBC, Al Jazeera)
+📰 INDIA — 5 bullets      (Hindu, TOI, HT, IE, NDTV, India Today, News18, Scroll)
+💼 BUSINESS — 3 bullets   (Mint, ET, ET Markets, Moneycontrol)
+📍 HYDERABAD — 2 bullets  (Hindu Telangana, TOI Hyd, Telangana Today, Siasat)
+🇺🇸 US — 5 bullets         (NPR, NYT, Guardian, CNN, WaPo, ABC, The Hill,
+                           Axios — India-US corridor stories always kept:
+                           visas, H-1B, immigration, trade)
+🌍 WORLD — 3 bullets      (BBC, Al Jazeera, Guardian, CNN, France24, DW)
 ```
 
 Bullets are 1-2 sentences of substance (feed summaries ride along in the
