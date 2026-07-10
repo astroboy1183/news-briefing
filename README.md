@@ -1,10 +1,30 @@
 # news-briefing
 
 Morning news briefing → Telegram, ~6:13 AM IST via GitHub Actions.
+One agent, one task, one bot: `@jayanth_news_brief_bot`.
 
-India + US + world/geopolitics headlines from seven RSS feeds, deduped and
-filtered to what a professional should know. One agent, one task, one
-bot: `@jayanth_news_brief_bot`.
+Fourteen feeds, five sections plus a topline:
+
+```
+📰 News — Fri 10 Jul
+52 fresh headlines · 14 feeds
+
+🗞 Top: <the single biggest story today>
+
+📰 INDIA — 5 bullets      (Hindu, TOI, HT, Indian Express)
+💼 BUSINESS — 3 bullets   (Mint, Economic Times — the data-engineer lens)
+📍 HYDERABAD — 2 bullets  (Hindu Telangana, TOI Hyderabad; omitted if quiet)
+🇺🇸 US — 5 bullets         (NPR, NYT, Guardian US, CNN US — India-US
+                           corridor stories always included: visas, H-1B,
+                           immigration, trade)
+🌍 WORLD — 3 bullets      (BBC, Al Jazeera)
+```
+
+Bullets are 1-2 sentences of substance (feed summaries ride along in the
+prompt where available), each with its validated source link. Two
+memories keep it honest across days: `seen.json` (a story is briefed
+once) and `briefed.json` (what the bullets said — so developments open
+with what's NEW instead of re-explaining).
 
 ## How the code works
 
