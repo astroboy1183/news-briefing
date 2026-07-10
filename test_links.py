@@ -46,3 +46,39 @@ text = "Just a headline with no link at all"
 check("prose untouched", validate_links(text, ALLOWED) == text)
 
 print("\nAll link-validation tests passed.")
+
+
+# --- continuity-memory helpers (added with the five-section upgrade) ---------
+
+import json
+import tempfile
+from pathlib import Path
+
+import news_briefing as nb
+
+reply = 'the briefing\n===STATE===\n{"briefed": ["story one", "story two"]}'
+text, keys = nb.split_state(reply)
+check("split_state extracts text and keys", text == "the briefing" and keys == ["story one", "story two"])
+
+text, keys = nb.split_state("no tail here")
+check("missing tail costs memory not message", text == "no tail here" and keys == [])
+
+text, keys = nb.split_state("msg\n===STATE===\nnot json")
+check("garbage tail costs memory not message", text == "msg" and keys == [])
+
+with tempfile.TemporaryDirectory() as tmp:
+    saved_briefed, saved_dir = nb.BRIEFED_FILE, nb.STATE_DIR
+    nb.STATE_DIR = Path(tmp)
+    nb.BRIEFED_FILE = Path(tmp) / "briefed.json"
+    try:
+        from datetime import datetime, timezone
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        nb.save_briefed({today: ["fresh"], "2020-01-01": ["ancient"]})
+        loaded = nb.load_briefed()
+    finally:
+        nb.BRIEFED_FILE, nb.STATE_DIR = saved_briefed, saved_dir
+check("briefed memory prunes old days", "2020-01-01" not in loaded and loaded[today] == ["fresh"])
+
+check("clean strips tags", nb.clean("<p>a</p>  <b>b</b>") == "a b")
+
+print("All continuity tests passed.")

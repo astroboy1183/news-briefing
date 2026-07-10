@@ -1,22 +1,34 @@
 #!/usr/bin/env python3
 """News briefing.
 
-One Telegram message every morning (~6:13 IST via GitHub Actions): India,
-US and world/geopolitics headlines from the last day's feeds, deduped and
-filtered down to what a professional should know.
+One Telegram message every morning (~6:13 IST via GitHub Actions), built
+from 14 feeds across five sections:
 
-One agent, one task, one bot. Tech news deliberately excluded — the
-tech-news agent covers it in depth an hour later; cricket has its own
-agent too.
+  🗞 Top          — the single biggest story of the day, one line
+  📰 INDIA        — national news (Hindu, TOI, HT, Indian Express)
+  💼 BUSINESS     — economy/RBI/markets/corporate (Mint, Economic Times)
+  📍 HYDERABAD    — Telangana/city news (omitted when nothing notable)
+  🇺🇸 US           — national + ALWAYS the India-US corridor (visas,
+                     H-1B, immigration, trade) when present
+  🌍 WORLD        — conflicts, diplomacy, major elections
 
-Cross-day memory (state/seen.json, committed back by the workflow): a
-story that lingers in the feeds for days is only ever briefed once —
-candidate links are remembered for 3 days and filtered out on re-entry.
+Bullets are 1-2 sentences of substance (what happened + why it matters),
+not rewritten headlines — feed summaries ride along in the prompt where
+the feed provides them. Every bullet carries its source link, validated
+against the gathered set so an invented URL can never reach me.
+
+Two memories (state/, committed back by the workflow):
+  seen.json    — candidate links shown to the model, 3 days: a story
+                 lingering in feeds is briefed exactly once
+  briefed.json — what the bullets actually SAID, 3 days: developments
+                 get framed as developments ("the verdict in X: …"),
+                 never re-explained from scratch
 
 Hard failures raise and land in the Actions log.
 """
 
 import json
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -29,41 +41,28 @@ from agentlib import ask_llm, send_telegram
 BASE_DIR = Path(__file__).resolve().parent
 IST = ZoneInfo("Asia/Kolkata")
 
-STATE_FILE = BASE_DIR / "state" / "seen.json"
-SEEN_DAYS = 3  # feeds re-serve stories for a day or two; 3 covers weekends
-
-
-def load_seen():
-    """{link: 'YYYY-MM-DD'} of recently briefed candidates, pruned to window.
-
-    Anything fed to the model counts as seen — a story it chose to skip
-    yesterday was not important enough to resurface unchanged today."""
-    try:
-        seen = json.loads(STATE_FILE.read_text())
-    except (OSError, ValueError):
-        return {}
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=SEEN_DAYS)).strftime(
-        "%Y-%m-%d"
-    )
-    return {k: v for k, v in seen.items() if isinstance(v, str) and v >= cutoff}
-
-
-def save_seen(seen):
-    STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    STATE_FILE.write_text(json.dumps(seen, indent=0, sort_keys=True) + "\n")
-
+# section → feeds. All URLs verified before inclusion (last check 10 Jul
+# 2026 — Politico tested and rejected, dead feed).
 FEEDS = {
     "india": [
         "https://www.thehindu.com/news/national/feeder/default.rss",
         "https://timesofindia.indiatimes.com/rssfeedstopstories.cms",
         "https://www.hindustantimes.com/feeds/rss/india-news/rssfeed.xml",
-        # policy/economy depth beyond the mainstream trio — verified 9 Jul 2026
         "https://indianexpress.com/section/india/feed/",
+    ],
+    "business": [
         "https://www.livemint.com/rss/news",
+        "https://economictimes.indiatimes.com/rssfeedstopstories.cms",
+    ],
+    "hyderabad": [
+        "https://www.thehindu.com/news/national/telangana/feeder/default.rss",
+        "https://timesofindia.indiatimes.com/rssfeeds/-2128816011.cms",
     ],
     "us": [
         "https://feeds.npr.org/1001/rss.xml",
         "https://rss.nytimes.com/services/xml/rss/nyt/US.xml",
+        "https://www.theguardian.com/us-news/rss",
+        "http://rss.cnn.com/rss/cnn_us.rss",
     ],
     "world": [
         "http://feeds.bbci.co.uk/news/world/rss.xml",
@@ -71,7 +70,21 @@ FEEDS = {
     ],
 }
 TITLES_PER_FEED = 8
-LOOKBACK_HOURS = 24
+SNIPPET_CHARS = 250  # feed summary excerpt per entry; many Indian feeds
+LOOKBACK_HOURS = 24  # have none — the model then judges by title alone
+
+TAG_RE = re.compile(r"<[^>]+>")
+
+STATE_DIR = BASE_DIR / "state"
+SEEN_FILE = STATE_DIR / "seen.json"
+BRIEFED_FILE = STATE_DIR / "briefed.json"
+SEEN_DAYS = 3  # feeds re-serve stories for a day or two; 3 covers weekends
+STATE_MARKER = "===STATE==="
+
+
+def clean(html):
+    """Strip tags and collapse whitespace — feed summaries arrive as HTML."""
+    return " ".join(TAG_RE.sub(" ", html or "").split())
 
 
 def fresh(entry, cutoff):
@@ -82,40 +95,103 @@ def fresh(entry, cutoff):
     return datetime(*stamp[:6], tzinfo=timezone.utc) >= cutoff
 
 
+def load_seen():
+    """{link: 'YYYY-MM-DD'} of recently briefed candidates, pruned to window.
+
+    Anything fed to the model counts as seen — a story it chose to skip
+    yesterday was not important enough to resurface unchanged today."""
+    try:
+        seen = json.loads(SEEN_FILE.read_text())
+    except (OSError, ValueError):
+        return {}
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=SEEN_DAYS)).strftime(
+        "%Y-%m-%d"
+    )
+    return {k: v for k, v in seen.items() if isinstance(v, str) and v >= cutoff}
+
+
+def save_seen(seen):
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    SEEN_FILE.write_text(json.dumps(seen, indent=0, sort_keys=True) + "\n")
+
+
+def load_briefed():
+    """{date: [story keys]} — what recent bullets actually said, pruned."""
+    try:
+        briefed = json.loads(BRIEFED_FILE.read_text())
+    except (OSError, ValueError):
+        return {}
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=SEEN_DAYS)).strftime(
+        "%Y-%m-%d"
+    )
+    return {
+        d: [s for s in lines if isinstance(s, str)]
+        for d, lines in briefed.items()
+        if isinstance(d, str) and d >= cutoff and isinstance(lines, list)
+    }
+
+
+def save_briefed(briefed):
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    BRIEFED_FILE.write_text(json.dumps(briefed, indent=1, sort_keys=True) + "\n")
+
+
+def split_state(reply):
+    """(message text, today's briefed-story keys) from the model reply.
+
+    The model appends a JSON tail after STATE_MARKER; a malformed tail
+    costs the continuity memory, never the briefing."""
+    if STATE_MARKER not in reply:
+        return reply.strip(), []
+    text, _, tail = reply.partition(STATE_MARKER)
+    start, end = tail.find("{"), tail.rfind("}")
+    keys = []
+    if start != -1 and end > start:
+        try:
+            keys = json.loads(tail[start : end + 1]).get("briefed", [])
+        except (ValueError, AttributeError):
+            keys = []
+    return text.strip(), [k for k in keys if isinstance(k, str)]
+
+
 def gather_headlines(seen=frozenset()):
-    """{'india': ['title | link', ...], ...} — failed feeds skipped."""
+    """{section: [{title, snippet, link}, …]} — failed feeds skipped."""
     cutoff = datetime.now(timezone.utc) - timedelta(hours=LOOKBACK_HOURS)
     out = {}
     for section, urls in FEEDS.items():
-        titles = []
+        entries = []
         for url in urls:
             try:
                 feed = feedparser.parse(url)
-                # .get(): a single malformed entry must not sink its feed;
-                # fresh(): stale/evergreen items never leak into the prompt;
-                # seen: a story briefed in the last 3 days never repeats.
-                titles += [
-                    f"{e.get('title')} | {e.get('link', '')}"
-                    for e in feed.entries[:TITLES_PER_FEED]
-                    if e.get("title")
-                    and fresh(e, cutoff)
-                    and e.get("link", "") not in seen
-                ]
+                for e in feed.entries[:TITLES_PER_FEED]:
+                    # .get(): a malformed entry must not sink its feed;
+                    # fresh(): stale items never enter; seen: a story
+                    # briefed in the last 3 days never repeats.
+                    if not e.get("title") or not fresh(e, cutoff):
+                        continue
+                    if e.get("link", "") in seen:
+                        continue
+                    entries.append(
+                        {
+                            "title": e["title"],
+                            "snippet": clean(e.get("summary", ""))[:SNIPPET_CHARS],
+                            "link": e.get("link", ""),
+                        }
+                    )
             except Exception:
                 continue  # dead feed → just use the others
-        out[section] = titles
+        out[section] = entries
     return out
 
 
 def gathered_links(headlines):
     """The set of source URLs we actually handed the model — for validation."""
-    links = set()
-    for titles in headlines.values():
-        for t in titles:
-            link = t.rsplit(" | ", 1)[-1].strip()
-            if link.startswith("http"):
-                links.add(link)
-    return links
+    return {
+        e["link"]
+        for entries in headlines.values()
+        for e in entries
+        if e["link"].startswith("http")
+    }
 
 
 def validate_links(text, allowed):
@@ -148,34 +224,57 @@ def validate_links(text, allowed):
     return "\n".join(lines)
 
 
-def summarize(headlines):
-    """One model call: raw titles in, three compact sections out."""
-    india = "\n".join(f"- {t}" for t in headlines.get("india", []))
-    us = "\n".join(f"- {t}" for t in headlines.get("us", []))
-    world = "\n".join(f"- {t}" for t in headlines.get("world", []))
+def summarize(headlines, briefed):
+    """One model call: sectioned candidates in, substantive briefing out."""
+    blocks = []
+    for section, entries in headlines.items():
+        lines = "\n".join(
+            f"- {e['title']}{' | ' + e['snippet'] if e['snippet'] else ''} | {e['link']}"
+            for e in entries
+        )
+        blocks.append(
+            f"=== {section.upper()} candidates ===\n{lines or '(feeds unavailable)'}"
+        )
+    recently = [key for lines in briefed.values() for key in lines]
 
     prompt = (
-        "You are composing my morning news briefing. Be terse. "
-        "Plain text only — no markdown headers or bold.\n\n"
-        "=== INPUT 1: India news headlines (title | link, multiple feeds) ===\n"
-        f"{india or '(feeds unavailable)'}\n\n"
-        "=== INPUT 2: US news headlines (title | link, multiple feeds) ===\n"
-        f"{us or '(feeds unavailable)'}\n\n"
-        "=== INPUT 3: World/geopolitics headlines (title | link, multiple feeds) ===\n"
-        f"{world or '(feeds unavailable)'}\n\n"
-        "Produce EXACTLY this output structure:\n\n"
-        "📰 INDIA — 4 bullets max. Dedupe overlapping stories, drop "
-        "clickbait/celebrity filler, keep what a professional should know.\n\n"
-        "🇺🇸 US — 3 bullets max. National-level news only: politics, economy, "
-        "policy. Drop local crime and celebrity stories.\n\n"
-        "🌍 GEOPOLITICS — 3 bullets max. Conflicts, diplomacy, trade, major "
-        "elections. Prefer stories with India or US relevance when choosing "
-        "what to keep.\n\n"
-        "After each bullet, put the story's link on its own line (when "
-        "feeds overlap, pick the better-known source's link). Copy links "
-        "verbatim — never invent one.\n\n"
-        "If an input says unavailable, output that section as a single line "
-        "saying so."
+        "You are composing my morning news briefing. I am a data engineer "
+        "in Hyderabad with strong US ties. Be terse and substantive. Plain "
+        "text only — no markdown headers or bold.\n\n"
+        + "\n\n".join(blocks)
+        + "\n\n=== RECENTLY BRIEFED (last 3 days — already covered) ===\n"
+        + ("\n".join(f"- {k}" for k in recently) or "(none)")
+        + "\n\nProduce EXACTLY this output structure:\n\n"
+        "🗞 Top: <the single biggest story today, one line>\n\n"
+        "📰 INDIA — 5 bullets max. National news a professional should "
+        "know; dedupe overlap, drop clickbait/celebrity filler.\n\n"
+        "💼 BUSINESS — 3 bullets max. Economy, RBI, markets policy, major "
+        "corporate/tech-industry moves — the ones a data engineer would "
+        "care about.\n\n"
+        "📍 HYDERABAD — 2 bullets max, Telangana/city news that affects "
+        "living there. OMIT this section entirely if nothing notable.\n\n"
+        "🇺🇸 US — 5 bullets max. National politics, economy, policy — and "
+        "ALWAYS include India-US corridor stories when present (visas, "
+        "H-1B, immigration, trade, Indians in the US); they are never "
+        "filler. Drop local crime and celebrity stories.\n\n"
+        "🌍 WORLD — 3 bullets max. Conflicts, diplomacy, trade, major "
+        "elections; prefer India or US relevance.\n\n"
+        "Rules:\n"
+        "- Each bullet: 1-2 sentences of substance — what happened AND why "
+        "it matters — then the story's link on its own line. Where only a "
+        "title was provided, stay conservative: report the headline fact, "
+        "never invent detail.\n"
+        "- RECENTLY BRIEFED lists stories already covered. If a candidate "
+        "is a development of one, lead with what is NEW ('The verdict in "
+        "…: '), never re-explain from scratch. If it merely repeats with "
+        "nothing new, skip it.\n"
+        "- When feeds overlap, pick the better-known source's link. Copy "
+        "links verbatim — never invent one.\n"
+        "- A section whose input says unavailable: one line saying so.\n\n"
+        f"Then output the line {STATE_MARKER} and ONE JSON object: "
+        '{"briefed": [a terse story key for each bullet you wrote, e.g. '
+        '"SC verdict on electoral bonds", "H-1B fee hike proposal"]}. '
+        "No text after the JSON."
     )
     return ask_llm(prompt, max_tokens=4000)
 
@@ -183,26 +282,34 @@ def summarize(headlines):
 def main():
     load_dotenv(BASE_DIR / ".env")
     seen = load_seen()
+    briefed = load_briefed()
     headlines = gather_headlines(seen)
     scanned = sum(len(v) for v in headlines.values())
+    feed_count = sum(len(u) for u in FEEDS.values())
 
     header = (
-        f"📰 News briefing — {datetime.now(IST):%a %d %b %Y}\n"
-        f"({scanned} fresh headlines scanned)\n\n"
+        f"📰 News — {datetime.now(IST):%a %d %b}\n"
+        f"{scanned} fresh headlines · {feed_count} feeds"
     )
+    briefed_today = []
     if scanned == 0:
         body = "Quiet day: nothing new since yesterday's briefing ☕"
     else:
-        body = validate_links(summarize(headlines), gathered_links(headlines))
-    send_telegram(header + body)
+        body, briefed_today = split_state(summarize(headlines, briefed))
+        body = validate_links(body, gathered_links(headlines))
+    send_telegram(header + "\n\n" + body)
 
-    # Remember what the model was shown — after the send, so a state
-    # failure never costs the briefing itself.
+    # Remember what the model was shown AND what it said — after the send,
+    # so a state failure never costs the briefing itself.
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     for link in gathered_links(headlines):
         seen[link] = today
+    if briefed_today:
+        briefed.setdefault(today, [])
+        briefed[today] += briefed_today
     try:
         save_seen(seen)
+        save_briefed(briefed)
     except OSError:
         pass
 
