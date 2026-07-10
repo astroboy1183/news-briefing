@@ -82,3 +82,51 @@ check("briefed memory prunes old days", "2020-01-01" not in loaded and loaded[to
 check("clean strips tags", nb.clean("<p>a</p>  <b>b</b>") == "a b")
 
 print("All continuity tests passed.")
+
+
+# --- two-stage selection helpers ---------------------------------------------
+
+def fake_headlines():
+    return {"india": [
+        {"title": f"Story {i}", "snippet": "", "link": f"https://x/{i}"}
+        for i in range(4)
+    ]}
+
+saved_ask = nb.ask_llm
+nb.ask_llm = lambda prompt, max_tokens=0, model="": '{"india": [2, 0, 99]}'
+try:
+    picked = nb.select_stories(fake_headlines(), {}, "m")
+finally:
+    nb.ask_llm = saved_ask
+check("selector picks valid indices in order",
+      [e["title"] for e in picked["india"]] == ["Story 2", "Story 0"])
+
+nb.ask_llm = lambda prompt, max_tokens=0, model="": "sorry no json"
+try:
+    picked = nb.select_stories(fake_headlines(), {}, "m")
+finally:
+    nb.ask_llm = saved_ask
+check("unparseable selector falls back to first N",
+      len(picked["india"]) == 4 and picked["india"][0]["title"] == "Story 0")
+
+from types import SimpleNamespace
+saved_req = nb.requests
+nb.requests = SimpleNamespace(get=lambda *a, **k: SimpleNamespace(
+    text="<html><script>junk</script><p>the article body</p></html>",
+    raise_for_status=lambda: None))
+try:
+    art = nb.fetch_article("https://x/1")
+finally:
+    nb.requests = saved_req
+check("article fetch strips boilerplate", "the article body" in art and "junk" not in art)
+
+def boom(*a, **k):
+    raise OSError("blocked")
+nb.requests = SimpleNamespace(get=boom)
+try:
+    art = nb.fetch_article("https://x/1")
+finally:
+    nb.requests = saved_req
+check("article fetch failure returns empty", art == "")
+
+print("All two-stage tests passed.")

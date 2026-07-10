@@ -28,12 +28,14 @@ Hard failures raise and land in the Actions log.
 """
 
 import json
+import os
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import feedparser
+import requests
 from dotenv import load_dotenv
 
 from agentlib import ask_llm, send_telegram
@@ -92,6 +94,15 @@ FEEDS = {
 TITLES_PER_FEED = 6
 SNIPPET_CHARS = 250  # feed summary excerpt per entry; some feeds have
 LOOKBACK_HOURS = 24  # none — the model then judges by title alone
+
+# Two-stage bullets: a cheap model SELECTS from headlines, the code
+# fetches the full articles for just the selected stories, a stronger
+# model WRITES from real article text. Snippets can't carry numbers,
+# names and consequences; articles can.
+SECTION_CAPS = {"india": 5, "business": 3, "hyderabad": 2, "us": 5, "world": 3}
+ARTICLE_CHARS = 3000   # per fetched article, boilerplate-stripped
+FETCH_TIMEOUT = 15     # one slow news site must not stall the run
+FETCH_HEADERS = {"User-Agent": "Mozilla/5.0 (news-briefing digest)"}
 
 TAG_RE = re.compile(r"<[^>]+>")
 
@@ -244,59 +255,118 @@ def validate_links(text, allowed):
     return "\n".join(lines)
 
 
-def summarize(headlines, briefed):
-    """One model call: sectioned candidates in, substantive briefing out."""
+def select_stories(headlines, briefed, model):
+    """Stage 1: a cheap model picks which stories deserve the bullets.
+
+    Returns {section: [entries]} capped per SECTION_CAPS. An unparseable
+    reply falls back to the first N candidates per section — a broken
+    selector must cost quality, never the briefing."""
     blocks = []
     for section, entries in headlines.items():
         lines = "\n".join(
-            f"- {e['title']}{' | ' + e['snippet'] if e['snippet'] else ''} | {e['link']}"
-            for e in entries
+            f"{i}. {e['title']}{' | ' + e['snippet'] if e['snippet'] else ''}"
+            for i, e in enumerate(entries)
         )
+        blocks.append(f"=== {section} ===\n{lines or '(none)'}")
+    recently = [key for lines in briefed.values() for key in lines]
+
+    reply = ask_llm(
+        "You are selecting stories for my morning news briefing. I am a "
+        "data engineer in Hyderabad with strong US ties.\n\n"
+        + "\n\n".join(blocks)
+        + "\n\n=== RECENTLY BRIEFED (already covered) ===\n"
+        + ("\n".join(f"- {k}" for k in recently) or "(none)")
+        + "\n\nPick per section, by candidate index: "
+        + ", ".join(f"{s} up to {n}" for s, n in SECTION_CAPS.items())
+        + ". Dedupe stories covered by several feeds (pick the best-known "
+        "source). Skip clickbait/celebrity filler. Skip stories already "
+        "briefed UNLESS a candidate carries a genuine development. In "
+        "'us', India-US corridor stories (visas, H-1B, immigration, "
+        "trade) are always worth a slot when present.\n\n"
+        "Output ONLY one JSON object mapping section name to an array of "
+        'chosen indices, e.g. {"india": [0, 4], "us": [2]}. No prose.',
+        max_tokens=400,
+        model=model,
+    )
+    try:
+        start, end = reply.find("{"), reply.rfind("}")
+        picks = json.loads(reply[start : end + 1])
+        selected = {}
+        for section, entries in headlines.items():
+            idx = [
+                i
+                for i in picks.get(section, [])
+                if isinstance(i, int) and 0 <= i < len(entries)
+            ]
+            selected[section] = [entries[i] for i in idx[: SECTION_CAPS[section]]]
+        return selected
+    except (ValueError, AttributeError, TypeError):
+        return {
+            s: entries[: SECTION_CAPS[s]] for s, entries in headlines.items()
+        }
+
+
+def fetch_article(link):
+    """Readable text of a news page, tags stripped — '' on any failure.
+
+    Snippets can't carry numbers, names and consequences; the article
+    can. Paywalled/blocking sites just fall back to the snippet."""
+    try:
+        resp = requests.get(link, timeout=FETCH_TIMEOUT, headers=FETCH_HEADERS)
+        resp.raise_for_status()
+        html = re.sub(
+            r"(?is)<(script|style|head|nav|footer|header|aside)[^>]*>.*?</\1>",
+            " ",
+            resp.text,
+        )
+        text = re.sub(r"<[^>]+>", " ", html)
+        return " ".join(text.split())[:ARTICLE_CHARS]
+    except Exception:
+        return ""
+
+
+def write_briefing(selected, briefed, model):
+    """Stage 2: a stronger model writes the bullets from full article text."""
+    blocks = []
+    for section, entries in selected.items():
+        lines = []
+        for e in entries:
+            body = e.get("article") or e.get("snippet") or "(title only)"
+            lines.append(f"- {e['title']}\n  TEXT: {body}\n  LINK: {e['link']}")
         blocks.append(
-            f"=== {section.upper()} candidates ===\n{lines or '(feeds unavailable)'}"
+            f"=== {section.upper()} — write up to {SECTION_CAPS[section]} "
+            f"bullets ===\n" + ("\n".join(lines) or "(feeds unavailable)")
         )
     recently = [key for lines in briefed.values() for key in lines]
 
     prompt = (
-        "You are composing my morning news briefing. I am a data engineer "
-        "in Hyderabad with strong US ties. Be terse and substantive. Plain "
-        "text only — no markdown headers or bold.\n\n"
+        "You are composing my morning news briefing from pre-selected "
+        "stories, each with article text where it could be fetched. I am "
+        "a data engineer in Hyderabad with strong US ties. Be terse and "
+        "substantive. Plain text only — no markdown headers or bold.\n\n"
         + "\n\n".join(blocks)
         + "\n\n=== RECENTLY BRIEFED (last 3 days — already covered) ===\n"
         + ("\n".join(f"- {k}" for k in recently) or "(none)")
         + "\n\nProduce EXACTLY this output structure:\n\n"
         "🗞 Top: <the single biggest story today, one line>\n\n"
-        "📰 INDIA — 5 bullets max. National news a professional should "
-        "know; dedupe overlap, drop clickbait/celebrity filler.\n\n"
-        "💼 BUSINESS — 3 bullets max. Economy, RBI, markets policy, major "
-        "corporate/tech-industry moves — the ones a data engineer would "
-        "care about.\n\n"
-        "📍 HYDERABAD — 2 bullets max, Telangana/city news that affects "
-        "living there. OMIT this section entirely if nothing notable.\n\n"
-        "🇺🇸 US — 5 bullets max. National politics, economy, policy — and "
-        "ALWAYS include India-US corridor stories when present (visas, "
-        "H-1B, immigration, trade, Indians in the US); they are never "
-        "filler. Drop local crime and celebrity stories.\n\n"
-        "🌍 WORLD — 3 bullets max. Conflicts, diplomacy, trade, major "
-        "elections; prefer India or US relevance.\n\n"
+        "📰 INDIA\n💼 BUSINESS\n📍 HYDERABAD\n🇺🇸 US\n🌍 WORLD\n\n"
         "Rules:\n"
-        "- Each bullet: 1-2 sentences of substance — what happened AND why "
-        "it matters — then the story's link on its own line. Where only a "
-        "title was provided, stay conservative: report the headline fact, "
-        "never invent detail.\n"
-        "- RECENTLY BRIEFED lists stories already covered. If a candidate "
-        "is a development of one, lead with what is NEW ('The verdict in "
-        "…: '), never re-explain from scratch. If it merely repeats with "
-        "nothing new, skip it.\n"
-        "- When feeds overlap, pick the better-known source's link. Copy "
-        "links verbatim — never invent one.\n"
-        "- A section whose input says unavailable: one line saying so.\n\n"
+        "- Each bullet: 2-3 sentences of real substance drawn from TEXT — "
+        "the concrete facts (numbers, names, dates) and why it matters — "
+        "then the story's LINK on its own line. Where TEXT is missing, "
+        "stay conservative: report the headline fact, never invent "
+        "detail.\n"
+        "- OMIT the HYDERABAD section entirely if its input is empty.\n"
+        "- If a story develops something in RECENTLY BRIEFED, lead with "
+        "what is NEW, never re-explain from scratch.\n"
+        "- Copy links verbatim — never invent one.\n"
+        "- A section with no stories: one line saying so.\n\n"
         f"Then output the line {STATE_MARKER} and ONE JSON object: "
         '{"briefed": [a terse story key for each bullet you wrote, e.g. '
         '"SC verdict on electoral bonds", "H-1B fee hike proposal"]}. '
         "No text after the JSON."
     )
-    return ask_llm(prompt, max_tokens=4000)
+    return ask_llm(prompt, max_tokens=4000, model=model)
 
 
 def main():
@@ -311,11 +381,21 @@ def main():
         f"📰 News — {datetime.now(IST):%a %d %b}\n"
         f"{scanned} fresh headlines · {feed_count} feeds"
     )
+    # env read after load_dotenv so .env values work too
+    select_model = os.environ.get("NEWS_MODEL_SELECT") or "claude-haiku-4-5"
+    write_model = os.environ.get("NEWS_MODEL_WRITE") or "claude-sonnet-5"
+
     briefed_today = []
     if scanned == 0:
         body = "Quiet day: nothing new since yesterday's briefing ☕"
     else:
-        body, briefed_today = split_state(summarize(headlines, briefed))
+        selected = select_stories(headlines, briefed, select_model)
+        for entries in selected.values():
+            for e in entries:  # fetch real article text for the chosen few
+                e["article"] = fetch_article(e["link"])
+        body, briefed_today = split_state(
+            write_briefing(selected, briefed, write_model)
+        )
         body = validate_links(body, gathered_links(headlines))
     send_telegram(header + "\n\n" + body)
 

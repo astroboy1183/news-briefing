@@ -20,11 +20,16 @@ Thirty verified feeds, five sections plus a topline:
 🌍 WORLD — 3 bullets      (BBC, Al Jazeera, Guardian, CNN, France24, DW)
 ```
 
-Bullets are 1-2 sentences of substance (feed summaries ride along in the
-prompt where available), each with its validated source link. Two
-memories keep it honest across days: `seen.json` (a story is briefed
-once) and `briefed.json` (what the bullets said — so developments open
-with what's NEW instead of re-explaining).
+Bullets are written from the ARTICLES, not the headlines — a two-stage
+pipeline: a cheap model (`NEWS_MODEL_SELECT`, default haiku) picks the
+stories from ~180 candidates, the code fetches the full article text for
+just those ~18 (boilerplate-stripped, 3k chars; paywalls fall back to
+the snippet), and a stronger model (`NEWS_MODEL_WRITE`, default sonnet)
+writes 2-3 sentences of concrete substance per story — numbers, names,
+consequences — each with its validated source link. Two memories keep it
+honest across days: `seen.json` (a story is briefed once) and
+`briefed.json` (what the bullets said — so developments open with what's
+NEW instead of re-explaining).
 
 ## How the code works
 
