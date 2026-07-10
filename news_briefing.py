@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """News briefing.
 
-One Telegram message every morning (~6:13 IST via GitHub Actions), built
-from 14 feeds across five sections:
+One Telegram message every morning (6:00 IST sharp via GitHub Actions), built
+from 30 verified feeds across five sections:
 
   🗞 Top          — the single biggest story of the day, one line
   📰 INDIA        — national news (Hindu, TOI, HT, Indian Express)

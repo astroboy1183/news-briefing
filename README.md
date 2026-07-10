@@ -1,6 +1,6 @@
 # news-briefing
 
-Morning news briefing → Telegram, ~6:13 AM IST via GitHub Actions.
+Morning news briefing → Telegram, 6:00 AM IST sharp via GitHub Actions.
 One agent, one task, one bot: `@jayanth_news_brief_bot`.
 
 Thirty verified feeds, five sections plus a topline:
@@ -75,8 +75,8 @@ NEW instead of re-explaining).
 
 - Tech news is deliberately excluded — the tech-news agent covers it in
   depth at 7:00; cricket has its own agent too. One agent, one task.
-- Two crons + dedupe guard: backup at 07:13 IST delivers only if the
-  06:13 primary was dropped or failed.
+- The fleet-scheduler dispatches 06:00 IST sharp; the GitHub crons
+  (06:00 / 07:00 IST) are guarded backups.
 
 - **Cross-day memory**: candidate links live in `state/seen.json`
   (committed back by the workflow) for 3 days, so a story lingering in
@@ -91,8 +91,8 @@ NEW instead of re-explaining).
 
 ## Ops
 
-- Schedule: `.github/workflows/news-briefing.yml`
-  (`43 0 * * *` UTC = 06:13 IST; backup 07:13)
+- Schedule: fleet-scheduler dispatches 06:00 IST sharp; backup crons
+  `30 0 * * *` / `30 1 * * *` UTC (06:00 / 07:00 IST)
 - Run now: `gh workflow run news-briefing.yml -R astroboy1183/news-briefing`
 - Secrets (Actions): `ANTHROPIC_API_KEY`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`
 - Local test: `cd ~/agents/news_briefing && <any fleet venv>/bin/python news_briefing.py`
