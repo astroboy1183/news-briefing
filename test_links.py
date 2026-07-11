@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Offline unit tests for validate_links — no network, no model, no deps.
+"""Offline unit tests for news_briefing — no network, no model, no deps.
 
 Run: python3 test_links.py
-Guards the promise that a link the model invents (one never present in the
-gathered feed set) can never reach Telegram.
+Guards the promises that matter: a link the model invents can never reach
+Telegram, the continuity memory survives malformed model tails, the
+two-stage selector fails soft, the watchlist guarantee is deterministic,
+and the photo/week enrichments can never sink the briefing.
 """
 
 from news_briefing import validate_links
@@ -48,7 +50,7 @@ check("prose untouched", validate_links(text, ALLOWED) == text)
 print("\nAll link-validation tests passed.")
 
 
-# --- continuity-memory helpers (added with the five-section upgrade) ---------
+# --- continuity-memory helpers ------------------------------------------------
 
 import json
 import tempfile
@@ -56,58 +58,116 @@ from pathlib import Path
 
 import news_briefing as nb
 
-reply = 'the briefing\n===STATE===\n{"briefed": ["story one", "story two"]}'
-text, keys = nb.split_state(reply)
-check("split_state extracts text and keys", text == "the briefing" and keys == ["story one", "story two"])
+reply = ('the briefing\n===STATE===\n'
+         '{"briefed": ["story one", "story two"], "top_link": "https://x/top"}')
+text, keys, top = nb.split_state(reply)
+check("split_state extracts text, keys and top link",
+      text == "the briefing" and keys == ["story one", "story two"]
+      and top == "https://x/top")
 
-text, keys = nb.split_state("no tail here")
-check("missing tail costs memory not message", text == "no tail here" and keys == [])
+text, keys, top = nb.split_state("no tail here")
+check("missing tail costs memory not message",
+      text == "no tail here" and keys == [] and top == "")
 
-text, keys = nb.split_state("msg\n===STATE===\nnot json")
-check("garbage tail costs memory not message", text == "msg" and keys == [])
+text, keys, top = nb.split_state("msg\n===STATE===\nnot json")
+check("garbage tail costs memory not message",
+      text == "msg" and keys == [] and top == "")
+
+text, keys, top = nb.split_state('m\n===STATE===\n{"briefed": [], "top_link": 7}')
+check("non-string top link discarded", top == "")
 
 with tempfile.TemporaryDirectory() as tmp:
     saved_briefed, saved_dir = nb.BRIEFED_FILE, nb.STATE_DIR
     nb.STATE_DIR = Path(tmp)
     nb.BRIEFED_FILE = Path(tmp) / "briefed.json"
     try:
-        from datetime import datetime, timezone
+        from datetime import datetime, timezone, timedelta
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        nb.save_briefed({today: ["fresh"], "2020-01-01": ["ancient"]})
+        five_days = (datetime.now(timezone.utc) - timedelta(days=5)).strftime("%Y-%m-%d")
+        nb.save_briefed({today: ["fresh"], five_days: ["mid-week"],
+                         "2020-01-01": ["ancient"]})
         loaded = nb.load_briefed()
     finally:
         nb.BRIEFED_FILE, nb.STATE_DIR = saved_briefed, saved_dir
-check("briefed memory prunes old days", "2020-01-01" not in loaded and loaded[today] == ["fresh"])
+check("briefed memory keeps a week, prunes older",
+      "2020-01-01" not in loaded and loaded[today] == ["fresh"]
+      and loaded[five_days] == ["mid-week"])
 
 check("clean strips tags", nb.clean("<p>a</p>  <b>b</b>") == "a b")
 
 print("All continuity tests passed.")
 
 
-# --- two-stage selection helpers ---------------------------------------------
+# --- editions -----------------------------------------------------------------
 
-def fake_headlines():
+from datetime import datetime as real_dt
+
+check("6am is the morning edition",
+      nb.edition(real_dt(2026, 7, 11, 6, 0, tzinfo=nb.IST)) == "morning")
+check("9pm is the evening wrap",
+      nb.edition(real_dt(2026, 7, 11, 21, 0, tzinfo=nb.IST)) == "evening")
+check("evening caps stay tight",
+      sum(nb.EVENING_CAPS.values()) < sum(nb.SECTION_CAPS.values())
+      and set(nb.EVENING_CAPS) == set(nb.SECTION_CAPS) == set(nb.FEEDS))
+
+print("All edition tests passed.")
+
+
+# --- watchlist ----------------------------------------------------------------
+
+import os
+
+os.environ["NEWS_WATCH"] = "H-1B, , RBI "
+check("watch terms parsed and normalised", nb.watch_terms() == ["h-1b", "rbi"])
+os.environ["NEWS_WATCH"] = ""
+check("empty watchlist is empty", nb.watch_terms() == [])
+
+e = {"title": "New H-1B fee rule announced", "snippet": ""}
+check("watch hit on title", nb.watch_hit(e, ["h-1b"]))
+e = {"title": "Quiet day", "snippet": "RBI holds repo rate"}
+check("watch hit on snippet", nb.watch_hit(e, ["rbi"]))
+check("no terms no hit", not nb.watch_hit(e, []))
+
+print("All watchlist tests passed.")
+
+
+# --- two-stage selection helpers ----------------------------------------------
+
+CAPS = {"india": 2}
+
+
+def fake_headlines(watch_idx=()):
     return {"india": [
-        {"title": f"Story {i}", "snippet": "", "link": f"https://x/{i}"}
+        {"title": f"Story {i}", "snippet": "", "link": f"https://x/{i}",
+         "watch": i in watch_idx}
         for i in range(4)
     ]}
 
 saved_ask = nb.ask_llm
 nb.ask_llm = lambda prompt, max_tokens=0, model="": '{"india": [2, 0, 99]}'
 try:
-    picked = nb.select_stories(fake_headlines(), {}, "m")
+    picked = nb.select_stories(fake_headlines(), {}, "m", CAPS)
 finally:
     nb.ask_llm = saved_ask
-check("selector picks valid indices in order",
+check("selector picks valid indices in order, capped",
       [e["title"] for e in picked["india"]] == ["Story 2", "Story 0"])
+
+# The model skipped the 👁 story at index 3 — it is forced back in.
+nb.ask_llm = lambda prompt, max_tokens=0, model="": '{"india": [0, 1]}'
+try:
+    picked = nb.select_stories(fake_headlines(watch_idx={3}), {}, "m", CAPS)
+finally:
+    nb.ask_llm = saved_ask
+check("skipped watchlist story is forced in",
+      [e["title"] for e in picked["india"]] == ["Story 0", "Story 1", "Story 3"])
 
 nb.ask_llm = lambda prompt, max_tokens=0, model="": "sorry no json"
 try:
-    picked = nb.select_stories(fake_headlines(), {}, "m")
+    picked = nb.select_stories(fake_headlines(), {}, "m", CAPS)
 finally:
     nb.ask_llm = saved_ask
 check("unparseable selector falls back to first N",
-      len(picked["india"]) == 4 and picked["india"][0]["title"] == "Story 0")
+      len(picked["india"]) == 2 and picked["india"][0]["title"] == "Story 0")
 
 from types import SimpleNamespace
 saved_req = nb.requests
@@ -130,3 +190,76 @@ finally:
 check("article fetch failure returns empty", art == "")
 
 print("All two-stage tests passed.")
+
+
+# --- photo front page ----------------------------------------------------------
+
+def page(html):
+    return SimpleNamespace(text=html, raise_for_status=lambda: None)
+
+nb.requests = SimpleNamespace(get=lambda *a, **k: page(
+    '<meta property="og:image" content="https://img.x/pic.jpg"/>'))
+try:
+    img = nb.fetch_og_image("https://x/1")
+finally:
+    nb.requests = saved_req
+check("og:image extracted", img == "https://img.x/pic.jpg")
+
+nb.requests = SimpleNamespace(get=lambda *a, **k: page(
+    '<meta content="https://img.x/2.jpg" property="og:image">'))
+try:
+    img = nb.fetch_og_image("https://x/1")
+finally:
+    nb.requests = saved_req
+check("og:image found with reversed attribute order", img == "https://img.x/2.jpg")
+
+nb.requests = SimpleNamespace(get=lambda *a, **k: page("<html>no meta</html>"))
+try:
+    img = nb.fetch_og_image("https://x/1")
+finally:
+    nb.requests = saved_req
+check("missing og:image returns empty", img == "")
+
+nb.requests = SimpleNamespace(get=boom)
+try:
+    img = nb.fetch_og_image("https://x/1")
+finally:
+    nb.requests = saved_req
+check("og fetch failure returns empty", img == "")
+
+os.environ.pop("TELEGRAM_BOT_TOKEN", None)
+os.environ.pop("TELEGRAM_CHAT_ID", None)
+check("send_photo without credentials is a quiet no-op",
+      nb.send_photo("https://img.x/pic.jpg", "cap") is False)
+
+print("All photo tests passed.")
+
+
+# --- week in review -------------------------------------------------------------
+
+check("week in review needs 3 days of memory",
+      nb.week_in_review({"2026-07-10": ["a"], "2026-07-11": ["b"]}, "m") == "")
+
+WEEK = {f"2026-07-{d:02d}": [f"story {d}"] for d in range(6, 11)}
+nb.ask_llm = lambda prompt, max_tokens=0, model="": "🗓 THE WEEK\n• story 6: grew all week"
+try:
+    week = nb.week_in_review(WEEK, "m")
+finally:
+    nb.ask_llm = saved_ask
+check("week block returned when arcs exist", week.startswith("🗓 THE WEEK"))
+
+nb.ask_llm = lambda prompt, max_tokens=0, model="": "NONE"
+try:
+    week = nb.week_in_review(WEEK, "m")
+finally:
+    nb.ask_llm = saved_ask
+check("NONE means no week block", week == "")
+
+nb.ask_llm = lambda prompt, max_tokens=0, model="": "sure! here are arcs without the header"
+try:
+    week = nb.week_in_review(WEEK, "m")
+finally:
+    nb.ask_llm = saved_ask
+check("malformed week reply dropped", week == "")
+
+print("All week-in-review tests passed.")

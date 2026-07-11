@@ -2,14 +2,16 @@ name: News briefing
 
 on:
   schedule:
-    # Primary: 00:30 UTC = 06:00 IST. Odd minute avoids GitHub's
-    # top-of-hour cron congestion.
+    # Two editions a day, each with a backup an hour later (GitHub delays
+    # or drops schedule events under load — fleet lesson from 2026-07-04;
+    # the guard step pairs each backup with its own edition's primary).
+    # Off-round minutes avoid GitHub's top-of-hour cron congestion.
+    # Morning briefing: 00:30 UTC = 06:00 IST; backup 07:00.
     - cron: '30 0 * * *'
-    # Backup: 01:30 UTC = 07:00 IST. GitHub delays or drops schedule
-    # events under load (fleet lesson from 2026-07-04). The guard step skips
-    # this run when the primary already handled today, so it only delivers
-    # when the primary was dropped — or failed, making it a retry too.
     - cron: '30 1 * * *'
+    # Evening wrap: 15:30 UTC = 21:00 IST; backup 22:00.
+    - cron: '30 15 * * *'
+    - cron: '30 16 * * *'
   workflow_dispatch:
     inputs:
       source:
@@ -26,7 +28,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - name: Skip if an earlier run already handled today
+      - name: Skip if an earlier run already handled this edition
         id: guard
         env:
           GH_TOKEN: ${{ github.token }}
@@ -34,13 +36,16 @@ jobs:
         run: |
           # Truly-manual runs always proceed; cron runs and scheduler
           # dispatches (source=scheduler) dedupe against each other. Fails open — a broken check must never cost a send.
+          # Window is 3 hours, NOT today: that pairs each backup with its
+          # own edition's primary while letting the evening wrap run
+          # after a successful morning briefing.
           if [ "$GITHUB_EVENT_NAME" != "schedule" ] && [ "$DISPATCH_SOURCE" != "scheduler" ]; then
             exit 0
           fi
-          today=$(date -u +%Y-%m-%d)
+          since=$(date -u -d '3 hours ago' +%Y-%m-%dT%H:%M:%SZ)
           count=$(RUN_ID="$GITHUB_RUN_ID" gh api -X GET \
             "repos/$GITHUB_REPOSITORY/actions/workflows/news-briefing.yml/runs" \
-            -f created=">=$today" \
+            -f created=">=$since" \
             --jq '[.workflow_runs[]
                    | select(.event == "schedule" or .event == "workflow_dispatch")
                    | select(.id != (env.RUN_ID|tonumber))
@@ -70,6 +75,7 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          NEWS_WATCH: ${{ secrets.NEWS_WATCH }}
         run: python news_briefing.py
 
 
