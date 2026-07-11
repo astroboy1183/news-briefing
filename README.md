@@ -8,28 +8,34 @@ One agent, one task, one bot: `@jayanth_news_brief_bot`.
   briefing (the seen-memory guarantees zero overlap); silent when
   genuinely nothing new
 
-Thirty-six verified feeds, six sections plus a topline:
+Forty-one verified feeds, seven sections plus a topline:
 
 ```
 📰 News — Sat 11 Jul
-118 fresh headlines · 36 feeds
+127 fresh headlines · 41 feeds
 
 🗞 Top: <the single biggest story>          ← also sent as a PHOTO front
                                               page (the article's own
                                               og:image, captioned)
 
 📰 INDIA — 5 bullets      (Hindu, TOI, HT, IE, NDTV, India Today, News18, Scroll)
-🏛 POLITICS — 3 bullets   (IE Political Pulse, News18 Politics, Hindu Elections)
+🏛 POLITICS — 3 bullets   (Indian politics: IE Political Pulse, News18
+                           Politics, Hindu Elections)
 💼 BUSINESS — 3 bullets   (Mint, ET, ET Markets, Moneycontrol)
 📍 HYDERABAD — 3 bullets  (Hindu Telangana, TOI Hyd, Telangana Today, Siasat
                            + Telugu media: NTV, V6 Velugu, Sakshi)
-🇺🇸 US — 5 bullets         (NPR, NYT, Guardian, CNN, WaPo, ABC, The Hill,
-                           Axios — India-US corridor stories always kept:
-                           visas, H-1B, immigration, trade)
+🗽 US POLITICS & IMMIGRATION — 4 bullets
+                          (NPR Politics, NYT Politics, Guardian US-politics,
+                           Politico Politics + Congress, The Hill —
+                           immigration stories ALWAYS get a slot: visas,
+                           H-1B, green cards, border, USCIS, and the
+                           India-US corridor)
+🇺🇸 US — 4 bullets         (non-politics national: NPR, NYT, Guardian, CNN,
+                           WaPo, ABC, Axios)
 🌍 WORLD — 3 bullets      (BBC, Al Jazeera, Guardian, CNN, France24, DW)
 ```
 
-The evening wrap uses the same sections with tight caps (Top + ~8
+The evening wrap uses the same sections with tight caps (Top + ~9
 bullets). **Sunday mornings append 🗓 THE WEEK** — up to 5 story arcs
 traced from the 7-day briefed memory ("H-1B fee rule: proposed Mon,
 pushback Wed, paused Fri").
@@ -43,7 +49,7 @@ and their bullets carry the 👁 prefix. Change topics anytime with
 
 Bullets are written from the ARTICLES, not the headlines — a two-stage
 pipeline: a cheap model (`NEWS_MODEL_SELECT`, default haiku) picks the
-stories from ~200 candidates, the code fetches the full article text for
+stories from ~220 candidates, the code fetches the full article text for
 just those (boilerplate-stripped, 3k chars; paywalls fall back to the
 snippet), and a stronger model (`NEWS_MODEL_WRITE`, default sonnet)
 writes 2-3 sentences of concrete substance per story — numbers, names,
@@ -57,7 +63,7 @@ developments open with what's NEW, and Sunday can trace the week).
 
 `news_briefing.py`, in pipeline order:
 
-- **`FEEDS`** — `{section: [feed urls]}`, 36 sources, every one verified
+- **`FEEDS`** — `{section: [feed urls]}`, 41 sources, every one verified
   before inclusion (the header comment lists ~15 tested-and-rejected
   feeds, so nobody re-adds a dead one). `TITLES_PER_FEED = 6` caps each
   feed's contribution; editing this dict is the only change needed to
@@ -110,8 +116,11 @@ developments open with what's NEW, and Sunday can trace the week).
 ## Design notes
 
 - Tech news is deliberately excluded — the tech-news agent covers it at
-  7:00; cricket has its own agent too. One agent, one task. US politics
-  stays in the US section; 🏛 POLITICS is Indian politics.
+  7:00; cricket has its own agent too. One agent, one task. Politics is
+  split by country: 🏛 POLITICS is Indian, 🗽 US POLITICS & IMMIGRATION
+  is American (with immigration guaranteed a slot — no keyless
+  immigration-only feed exists, NYT Immigration and USCIS are both 404,
+  so the guarantee lives in the selector rule + the 👁 watchlist).
 - The evening wrap exists because India's news cycle happens 9:00–21:00
   — a morning-only briefing reads most Indian news 12–20 hours stale.
   The seen-memory (all morning candidates are marked seen) makes the

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """News briefing.
 
-Two Telegram editions a day via GitHub Actions, built from 36 verified
-feeds across six sections:
+Two Telegram editions a day via GitHub Actions, built from 41 verified
+feeds across seven sections:
 
   morning (6:00 IST sharp) — the full briefing
   evening (21:00 IST)      — a tight wrap of what broke SINCE the morning
@@ -12,12 +12,14 @@ feeds across six sections:
   🗞 Top          — the single biggest story, one line (sent as a photo
                      front page when the article carries an og:image)
   📰 INDIA        — national news
-  🏛 POLITICS     — Indian political developments with governance substance
+  🏛 POLITICS     — INDIAN political developments with governance substance
   💼 BUSINESS     — economy/RBI/markets/corporate
   📍 HYDERABAD    — Telangana/city news, incl. Telugu media (omitted when
                      nothing notable)
-  🇺🇸 US           — national + ALWAYS the India-US corridor (visas,
-                     H-1B, immigration, trade) when present
+  🗽 US POLITICS & IMMIGRATION — White House/Congress/courts/campaigns
+                     AND immigration policy; visa/H-1B/green-card and
+                     India-US corridor stories ALWAYS get a slot
+  🇺🇸 US           — national news beyond politics
   🌍 WORLD        — conflicts, diplomacy, major elections
 
 Bullets are written from the ARTICLES, not the headlines (two-stage
@@ -54,12 +56,16 @@ BASE_DIR = Path(__file__).resolve().parent
 IST = ZoneInfo("Asia/Kolkata")
 
 # section → feeds. Every URL verified before inclusion (sweeps 10–11 Jul
-# 2026). Tested and REJECTED as dead/empty/misfiled: Politico, ThePrint,
+# 2026). Tested and REJECTED as dead/empty/misfiled: ThePrint,
 # Deccan Herald, Business Standard, Financial Express, The Wire, Hindu
 # politics topic, HT politics, India Today politics, TOI "politics"
 # (actually their business feed), Eenadu, Deccan Chronicle, Hans India,
-# News Minute (1-entry feed), Greatandhra (film-gossip heavy), and the
-# NTV/V6/Sakshi category feeds (redirect to the general ones kept below).
+# News Minute (1-entry feed), Greatandhra (film-gossip heavy), the
+# NTV/V6/Sakshi category feeds (redirect to the general ones kept below),
+# NYT Immigration + USCIS news + Axios politics (404), MPI (stale/not
+# news), CBS/ABC politics + Roll Call (alive but redundant with the six
+# US-politics feeds kept). Politico was dead at politico.com/rss but is
+# alive at rss.politico.com.
 FEEDS = {
     "india": [
         "https://www.thehindu.com/news/national/feeder/default.rss",
@@ -94,6 +100,15 @@ FEEDS = {
         "https://www.v6velugu.com/feed",
         "https://www.sakshi.com/rss.xml",
     ],
+    "us_politics": [
+        "https://feeds.npr.org/1014/rss.xml",
+        "https://rss.nytimes.com/services/xml/rss/nyt/Politics.xml",
+        "https://www.theguardian.com/us-news/us-politics/rss",
+        "https://rss.politico.com/politics-news.xml",
+        # Congress feed pulls in immigration bills the front pages miss
+        "https://rss.politico.com/congress.xml",
+        "https://thehill.com/feed/",
+    ],
     "us": [
         "https://feeds.npr.org/1001/rss.xml",
         "https://rss.nytimes.com/services/xml/rss/nyt/US.xml",
@@ -101,7 +116,6 @@ FEEDS = {
         "http://rss.cnn.com/rss/cnn_us.rss",
         "https://feeds.washingtonpost.com/rss/national",
         "https://abcnews.go.com/abcnews/usheadlines",
-        "https://thehill.com/feed/",
         "https://api.axios.com/feed/",
     ],
     "world": [
@@ -128,11 +142,11 @@ EVENING_LOOKBACK_HOURS = 16  # 6:00 → 21:00 plus margin; seen-memory
 # names and consequences; articles can.
 SECTION_CAPS = {  # morning, the full briefing
     "india": 5, "politics": 3, "business": 3,
-    "hyderabad": 3, "us": 5, "world": 3,
+    "hyderabad": 3, "us_politics": 4, "us": 4, "world": 3,
 }
-EVENING_CAPS = {  # the wrap stays tight — Top + ~8 bullets
+EVENING_CAPS = {  # the wrap stays tight — Top + ~9 bullets
     "india": 2, "politics": 1, "business": 1,
-    "hyderabad": 1, "us": 2, "world": 1,
+    "hyderabad": 1, "us_politics": 2, "us": 1, "world": 1,
 }
 WATCH_EXTRA = 2        # watchlist stories forced in per section, at most
 ARTICLE_CHARS = 3000   # per fetched article, boilerplate-stripped
@@ -346,15 +360,21 @@ def select_stories(headlines, briefed, model, caps):
         "exactly one copy, from the best-known source, in ONE section only "
         "(if it fits several, pick the best fit).\n"
         "- Vary outlets within a section — one outlet must not fill it.\n"
-        "- politics = Indian political developments with governance "
+        "- politics = INDIAN political developments with governance "
         "substance (elections, parliament, party moves with consequences); "
         "skip pure slanging matches.\n"
+        "- us_politics = US national politics (White House, Congress, "
+        "courts, campaigns) AND immigration policy. Immigration stories — "
+        "visas, H-1B, green cards, border, deportations, USCIS — and "
+        "India-US corridor stories are ALWAYS worth a slot here when "
+        "present.\n"
+        "- us = US national news beyond politics (economy, society, "
+        "disasters, culture with consequence) — political stories belong "
+        "in us_politics.\n"
         "- Skip clickbait/celebrity/cinema filler (some Telugu feeds carry "
         "a lot of it).\n"
         "- Skip stories already briefed UNLESS a candidate carries a "
-        "genuine development.\n"
-        "- In 'us', India-US corridor stories (visas, H-1B, immigration, "
-        "trade) are always worth a slot when present.\n\n"
+        "genuine development.\n\n"
         "Output ONLY one JSON object mapping section name to an array of "
         'chosen indices, e.g. {"india": [0, 4], "us": [2]}. No prose.',
         max_tokens=400,
@@ -469,10 +489,12 @@ def write_briefing(selected, briefed, model, caps, ed="morning"):
         + "\n\n".join(blocks)
         + "\n\n=== RECENTLY BRIEFED (last days — already covered) ===\n"
         + ("\n".join(f"- {k}" for k in recently) or "(none)")
-        + "\n\nProduce EXACTLY this output structure:\n\n"
+        + "\n\nProduce EXACTLY this output structure (US_POLITICS input "
+        "becomes the 🗽 section):\n\n"
         "🗞 Top: <the single biggest story, one line — broadest "
         "consequence wins>\n\n"
-        "📰 INDIA\n🏛 POLITICS\n💼 BUSINESS\n📍 HYDERABAD\n🇺🇸 US\n🌍 WORLD\n\n"
+        "📰 INDIA\n🏛 POLITICS\n💼 BUSINESS\n📍 HYDERABAD\n"
+        "🗽 US POLITICS & IMMIGRATION\n🇺🇸 US\n🌍 WORLD\n\n"
         "Rules:\n"
         "- Each bullet: 2-3 sentences of real substance drawn from TEXT — "
         "the concrete facts (numbers, names, dates) and why it matters — "
